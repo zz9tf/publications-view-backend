@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 import json
 import random
+from utils.scholar_crawler import scholar_crawler
 
 # 配置日志记录器
 logger = logging.getLogger(f"url_item_api {datetime.now()}")
@@ -30,26 +31,24 @@ async def fetch_url_item(request: GoogleSearchRequest):
         
         logger.info(f"收到获取URL条目请求: url={url}, searchId={search_id}, clientId={client_id}")
         
-        # 创建符合URLItem模式的模拟数据
-        fetched_papers = 0
-        total_papers = random.randint(fetched_papers, 100)
-        progress = int((fetched_papers / total_papers) * 100) if total_papers > 0 else 100
+        scholar_crawler.init_basic_scholar_info(url, client_id, search_id)
+        search_info = scholar_crawler.google_scholar_search_dict[client_id][search_id]
         
-        mock_data = URLItem(
-            search_id=search_id,
-            url=url,
-            short_description=f"Junzhou Huang",
-            progress=progress,
-            status="completed" if progress == 100 else "processing",
-            fetched_paper_count=fetched_papers,
-            total_paper_count=total_papers
+        data = URLItem(
+            search_id=search_info["search_id"],
+            url=search_info["url"],
+            short_description=search_info["author_name"],
+            progress=search_info["progress"],
+            status=search_info["status"],
+            fetched_paper_count=search_info["fetched_paper_count"],
+            total_paper_count=search_info["total_paper_count"]
         )
         
-        logger.info(f"返回模拟数据: {mock_data}")
+        logger.info(f"返回模拟数据: {data}")
         
         return ApiResponse(
             success=True,
-            data=mock_data.model_dump()
+            data=data.model_dump()
         )
         
     except Exception as e:

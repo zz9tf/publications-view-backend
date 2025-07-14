@@ -19,7 +19,7 @@ class GoogleScholarCrawler:
     功能：从Google Scholar页面抓取论文详细信息
     """
     
-    def __init__(self, headless=True):
+    def __init__(self, headless=False):
         """
         初始化爬虫配置
         
@@ -36,7 +36,8 @@ class GoogleScholarCrawler:
         
         self.driver = None
         self.wait = None
-        self.publications = []
+        self.google_scholar_search_dict = {}
+        self._initialize_driver()
         
     def _initialize_driver(self):
         """初始化WebDriver"""
@@ -48,8 +49,40 @@ class GoogleScholarCrawler:
             except Exception as e:
                 logger.error(f"WebDriver初始化失败: {str(e)}")
                 raise e
-    
-    def search_papers(self, google_scholar_url: str, client_id: str) -> List[Dict[str, Any]]:
+            
+    def init_basic_scholar_info(self, google_scholar_url: str, client_id: str, search_id: str):
+        if client_id not in self.google_scholar_search_dict:
+            self.google_scholar_search_dict[client_id] = {}
+        
+        self.google_scholar_search_dict[client_id][search_id] = {
+            "client_id": client_id,
+            "search_id": search_id,
+            "url": google_scholar_url,
+            "author_name": "",
+            "status": "processing",
+            "progress": 0,
+            "fetched_paper_count": 0,
+            "total_paper_count": 0,
+            "papers_elements": None,
+            "papers": []
+        }
+        
+        logger.info(f"开始搜索: {google_scholar_url}")
+        self.driver.get(google_scholar_url)
+        time.sleep(2)  # 等待页面加载
+        
+        # 获取作者信息
+        author_info = self.driver.find_element(By.CSS_SELECTOR, ".gs_ai_pho")
+        author_name = author_info.text.strip()
+        logger.info(f"作者信息: {author_name}")
+        self.google_scholar_search_dict[search_id]["author_name"] = author_name
+
+        # 获取搜索结果
+        paper_elements = self.driver.find_elements(By.CSS_SELECTOR, ".gs_r.gs_or.gs_scl")
+        self.google_scholar_search_dict[search_id]["total_paper_count"] = len(paper_elements)
+        self.google_scholar_search_dict[search_id]["papers_elements"] = paper_elements
+
+    def search_papers(self, client_id: str, search_id: str) -> List[Dict[str, Any]]:
         """
         搜索论文
         
@@ -60,16 +93,9 @@ class GoogleScholarCrawler:
             List[Dict[str, Any]]: 论文列表
         """
         try:
-            self._initialize_driver()
-            
-            logger.info(f"开始搜索: {google_scholar_url}")
-            
-            self.driver.get(google_scholar_url)
-            time.sleep(2)  # 等待页面加载
-            
-            # 获取搜索结果
-            paper_elements = self.driver.find_elements(By.CSS_SELECTOR, ".gs_r.gs_or.gs_scl")
+            search_info = self.google_scholar_search_dict[client_id][search_id]
             papers = []
+            paper_elements = search_info["papers_elements"]
             
             for i, elem in enumerate(paper_elements):
                 try:
@@ -197,11 +223,11 @@ class GoogleScholarCrawler:
                     continue
             
             logger.info(f"搜索完成，找到 {len(papers)} 篇论文")
-            return papers
+            self.google_scholar_search_dict[client_id][search_id]["papers"] = papers
             
         except Exception as e:
             logger.error(f"搜索论文时出错: {str(e)}")
-            return []
+            self.google_scholar_search_dict[client_id][search_id]["status"] = "error"
         finally:
             self.close()
     
