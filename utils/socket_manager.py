@@ -5,6 +5,7 @@ import logging
 import traceback
 from datetime import datetime
 import starlette.websockets
+from schemas import BaseEvent
 
 logger = logging.getLogger("socket_manager")
 
@@ -403,6 +404,7 @@ class ConnectionManager:
         Returns:
             True if any messages were sent successfully
         """
+        logger.info(f"Sending event {event} to client {client_id}")
         if client_id is not None:
             # Send to specific client
             client = self.get_client(client_id)
@@ -448,6 +450,7 @@ class ConnectionManager:
                     try:
                         # Parse JSON
                         parsed_data = json.loads(data)
+                        parsed_data = BaseEvent(**parsed_data)
                         
                         # Update last active timestamp
                         client.set_data("last_active", datetime.now().isoformat())

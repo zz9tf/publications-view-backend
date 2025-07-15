@@ -277,7 +277,7 @@ async def google_social_login(request: Request, code: str):
         try:
             session = requests.Session()
             logger.info(f"发送POST请求: {token_url}")
-            token_response = session.request(method="POST", url=token_url, timeout=10, data=token_data)
+            token_response = session.request(method="POST", url=token_url, timeout=10000, data=token_data)
         except Exception as e:
             logger.error(f"请求错误: {str(e)}")
             return ApiResponse(success=False, error=f"请求错误: {str(e)}")
