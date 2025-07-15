@@ -423,7 +423,7 @@ class GoogleScholarSearchTask:
                     logger.error(f"❌ 处理论文失败 {paper_url}: {str(e)}")
                     continue
                 await socket_manager.send(WS_EVENTS["UPDATE_FETCH_A_GOOGLE_SCHOLAR_URL_PROCESS"], self._serialize_search_data(), self.client_id)
-            
+                logger.info(f"✅ 成功提取论文:\n{paper_info}")
             # 📊 更新最终结果
             self.search_data.papers = papers
             self.search_data.status = URLItemStatus.COMPLETED
@@ -468,27 +468,35 @@ class GoogleScholarSearchTask:
             return data
     
     def _extract_paper_details(self, paper_url: str) -> Optional[PaperBase]:
-        """📄 提取单篇论文的详细信息"""
+        """📄 提取单篇论文的详细信息 - 基于Google Scholar详情页面结构"""
         try:
             paper_info = {
                 "title": "",
                 "authors": [],
-                "year": 0,  # 默认值为0，稍后会更新
+                "year": 0,
                 "date": "",
                 "url": paper_url,
                 "pdf_url": None,
-                "citations": 0,  # 默认值为0，稍后会更新
+                "citations": 0,
                 "publisher": None,
                 "paper_type": None,
                 "description": None
             }
             
-            # 📑 提取标题
+            # 等待页面加载完成
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "#gsc_oci_table, #gsc_oci_title, h1"))
+                )
+            except TimeoutException:
+                logger.warning("⚠️ 页面加载超时，继续尝试提取信息")
+            
+            # 📑 提取标题 - 从gsc_oci_title或页面标题
             title_selectors = [
-                ".gs_rt h3 a",
-                ".gs_rt a",
+                "#gsc_oci_title .gsc_oci_title_link",
+                "#gsc_oci_title a",
+                "#gsc_oci_title",
                 "h1",
-                ".citation_title",
                 "title"
             ]
             
@@ -496,143 +504,146 @@ class GoogleScholarSearchTask:
                 try:
                     title_element = self.driver.find_element(By.CSS_SELECTOR, selector)
                     title = title_element.text.strip()
-                    if title and len(title) > 5:
+                    if title and len(title) > 5 and title != "View article":
                         paper_info["title"] = title
+                        logger.debug(f"📑 找到标题: {title}")
                         break
                 except NoSuchElementException:
                     continue
             
-            # 👥 提取作者信息
-            authors_selectors = [
-                ".gs_a",
-                ".citation_author",
-                ".authors",
-                ".author"
-            ]
-            
-            for selector in authors_selectors:
-                try:
-                    authors_element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    authors_text = authors_element.text.strip()
-                    if authors_text:
-                        authors = self._parse_authors(authors_text)
-                        if authors:
-                            paper_info["authors"] = authors
-                            break
-                except NoSuchElementException:
-                    continue
-            
-            # 📅 提取年份和日期
-            year_selectors = [
-                ".gs_a",
-                ".citation_date",
-                ".year",
-                ".date"
-            ]
-            
-            for selector in year_selectors:
-                try:
-                    date_element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    date_text = date_element.text.strip()
-                    year, date = self._parse_date_info(date_text)
-                    if year:
-                        paper_info["year"] = year
-                        paper_info["date"] = date
-                        break
-                except NoSuchElementException:
-                    continue
-            
-            # 🔗 提取PDF或论文库URL
-            pdf_selectors = [
-                "a[href*='.pdf']",
-                ".gs_or_ggsm a",
-                ".citation_pdf_url",
-                "a[href*='doi.org']",
-                "a[href*='arxiv.org']"
-            ]
-            
-            for selector in pdf_selectors:
-                try:
-                    pdf_elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for pdf_element in pdf_elements:
-                        href = pdf_element.get_attribute("href")
-                        if href and (href.endswith('.pdf') or 'doi.org' in href or 'arxiv.org' in href):
-                            paper_info["pdf_url"] = href
-                            break
-                    if paper_info["pdf_url"]:
-                        break
-                except NoSuchElementException:
-                    continue
-            
-            # 📊 提取引用次数
-            citation_selectors = [
-                ".gs_fl a[href*='cites']",
-                ".citation_count",
-                "a[href*='cited']"
-            ]
-            
-            for selector in citation_selectors:
-                try:
-                    citation_element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    citation_text = citation_element.text.strip()
-                    citations = self._parse_citations(citation_text)
-                    if citations is not None:
-                        paper_info["citations"] = citations
-                        break
-                except NoSuchElementException:
-                    continue
-            
-            # 📰 提取发表信息和类型
-            publisher_selectors = [
-                ".gs_a",
-                ".citation_venue",
-                ".journal",
-                ".conference"
-            ]
-            
-            for selector in publisher_selectors:
-                try:
-                    publisher_element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    publisher_text = publisher_element.text.strip()
-                    publisher, paper_type = self._parse_publisher_info(publisher_text)
-                    if publisher:
-                        paper_info["publisher"] = publisher
-                        paper_info["paper_type"] = paper_type
-                        break
-                except NoSuchElementException:
-                    continue
-            
-            # 📝 提取描述信息
-            description_selectors = [
-                ".gs_rs",
-                ".citation_abstract",
-                ".abstract",
-                ".description"
-            ]
-            
-            for selector in description_selectors:
-                try:
-                    desc_element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    description = desc_element.text.strip()
-                    if description and len(description) > 20:
-                        paper_info["description"] = description[:500]
-                        break
-                except NoSuchElementException:
-                    continue
-            
+            # 如果没有找到标题，尝试从meta标签获取
             if not paper_info["title"]:
+                try:
+                    meta_title = self.driver.find_element(By.CSS_SELECTOR, "meta[property='og:title']")
+                    title = meta_title.get_attribute("content")
+                    if title and len(title) > 5:
+                        paper_info["title"] = title.strip()
+                        logger.debug(f"📑 从meta标签获取标题: {title}")
+                except NoSuchElementException:
+                    pass
+            
+            # 📊 提取论文详情表格信息
+            try:
+                # 获取所有字段-值对
+                field_elements = self.driver.find_elements(By.CSS_SELECTOR, "#gsc_oci_table .gs_scl")
+                logger.debug(f"📊 找到 {len(field_elements)} 个字段")
+                
+                for field_element in field_elements:
+                    try:
+                        field_name_element = field_element.find_element(By.CSS_SELECTOR, ".gsc_oci_field")
+                        field_value_element = field_element.find_element(By.CSS_SELECTOR, ".gsc_oci_value")
+                        
+                        field_name = field_name_element.text.strip().lower()
+                        field_value = field_value_element.text.strip()
+                        
+                        if not field_value:
+                            continue
+                        
+                        logger.debug(f"📊 处理字段: {field_name} = {field_value[:50]}...")
+                        
+                        # 👥 处理作者信息
+                        if field_name == "authors":
+                            authors = self._parse_authors(field_value)
+                            if authors:
+                                paper_info["authors"] = authors
+                                logger.debug(f"👥 解析作者: {authors}")
+                        
+                        # 📅 处理发表日期
+                        elif field_name == "publication date":
+                            year, date = self._parse_date_info(field_value)
+                            if year and year > 0:
+                                paper_info["year"] = year
+                                paper_info["date"] = date
+                                logger.debug(f"📅 解析日期: {year}, {date}")
+                        
+                        # 📰 处理发表商信息（Journal/Book/Conference）
+                        elif field_name in ["book", "journal", "conference", "venue"]:
+                            paper_info["publisher"] = field_value
+                            # 根据字段类型推断论文类型
+                            if field_name == "journal":
+                                paper_info["paper_type"] = "Journal"
+                            elif field_name in ["book", "conference"]:
+                                paper_info["paper_type"] = "Conference"
+                            else:
+                                paper_info["paper_type"] = self._infer_paper_type(field_value)
+                            logger.debug(f"📰 解析发表商: {field_value}, 类型: {paper_info['paper_type']}")
+                        
+                        # 📝 处理描述信息
+                        elif field_name == "description":
+                            # 获取更详细的描述内容
+                            try:
+                                desc_element = field_element.find_element(By.CSS_SELECTOR, ".gsh_csp")
+                                description = desc_element.text.strip()
+                                if description and len(description) > 20:
+                                    paper_info["description"] = description  # 增加描述长度限制
+                                    logger.debug(f"📝 解析描述: {description[:100]}...")
+                            except NoSuchElementException:
+                                if len(field_value) > 20:
+                                    paper_info["description"] = field_value
+                                    logger.debug(f"📝 使用字段值作为描述: {field_value[:100]}...")
+                        
+                        # 📊 处理引用次数
+                        elif field_name == "total citations":
+                            citations = self._parse_citations(field_value)
+                            if citations is not None:
+                                paper_info["citations"] = citations
+                                logger.debug(f"📊 解析引用次数: {citations}")
+                        
+                    except NoSuchElementException:
+                        continue
+                        
+            except NoSuchElementException:
+                logger.warning("⚠️ 未找到论文详情表格")
+            
+            # 🔗 提取PDF链接 - 从gsc_oci_title_gg区域
+            try:
+                pdf_link_element = self.driver.find_element(By.CSS_SELECTOR, "#gsc_oci_title_gg a")
+                pdf_url = pdf_link_element.get_attribute("href")
+                if pdf_url and (".pdf" in pdf_url or "arxiv.org" in pdf_url):
+                    paper_info["pdf_url"] = pdf_url
+                    logger.debug(f"🔗 找到PDF链接: {pdf_url}")
+            except NoSuchElementException:
+                # 备用方案：查找其他PDF链接
+                pdf_selectors = [
+                    "a[href*='.pdf']",
+                    "a[href*='arxiv.org/pdf']",
+                    "a[href*='doi.org']"
+                ]
+                
+                for selector in pdf_selectors:
+                    try:
+                        pdf_elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        for pdf_element in pdf_elements:
+                            href = pdf_element.get_attribute("href")
+                            if href and (href.endswith('.pdf') or 'arxiv.org/pdf' in href):
+                                paper_info["pdf_url"] = href
+                                logger.debug(f"🔗 备用方案找到PDF链接: {href}")
+                                break
+                        if paper_info["pdf_url"]:
+                            break
+                    except NoSuchElementException:
+                        continue
+            
+            # ✅ 验证必需字段
+            if not paper_info["title"]:
+                logger.error("❌ 未找到论文标题")
                 return None
+            
+            # 🔧 设置默认值
+            if not paper_info["date"]:
+                paper_info["date"] = f"{paper_info['year']}-01-01" if paper_info["year"] > 0 else "1900-01-01"
+            
+            if not paper_info["paper_type"]:
+                paper_info["paper_type"] = "Unknown"
             
             # 🔧 创建PaperBase对象
             try:
-                # 确保必需字段有有效值
-                if not paper_info["date"]:
-                    paper_info["date"] = f"{paper_info['year']}-01-01" if paper_info["year"] > 0 else "1900-01-01"
-                
                 paper_base = PaperBase(**paper_info)
+                logger.info(f"✅ 成功提取论文信息: {paper_info['title'][:50]}...")
                 return paper_base
             except Exception as e:
                 logger.error(f"❌ 创建PaperBase对象失败: {str(e)}")
+                logger.debug(f"📊 论文信息: {paper_info}")
                 return None
             
         except Exception as e:
@@ -640,69 +651,88 @@ class GoogleScholarSearchTask:
             return None
     
     def _parse_authors(self, authors_text: str) -> List[str]:
-        """👥 解析作者信息"""
+        """👥 解析作者信息 - 优化版本"""
         try:
-            if " - " in authors_text:
-                authors_text = authors_text.split(" - ")[0]
+            # 移除常见的非作者信息
+            authors_text = re.sub(r'\s*-\s*.*$', '', authors_text)  # 移除 " - " 后的内容
+            authors_text = re.sub(r'\s*\d{4}.*$', '', authors_text)  # 移除年份后的内容
             
-            authors = [author.strip() for author in authors_text.split(",")]
+            # 分割作者
+            authors = []
+            if ',' in authors_text:
+                authors = [author.strip() for author in authors_text.split(',')]
+            else:
+                # 处理没有逗号分隔的情况
+                authors = [authors_text.strip()]
             
+            # 清理作者名称
             cleaned_authors = []
             for author in authors:
-                author = re.sub(r'\d{4}', '', author).strip()
-                author = re.sub(r'[^\w\s\-\.]', '', author).strip()
-                if author and len(author) > 1:
+                # 移除特殊字符和数字
+                author = re.sub(r'[^\w\s\-\.\']', '', author).strip()
+                author = re.sub(r'\d+', '', author).strip()
+                
+                # 验证作者名称
+                if author and len(author) > 1 and not author.isdigit():
                     cleaned_authors.append(author)
             
-            return cleaned_authors
+            return cleaned_authors[:10]  # 限制作者数量
             
         except Exception as e:
             logger.warning(f"⚠️ 解析作者信息失败: {str(e)}")
             return []
     
     def _parse_date_info(self, date_text: str) -> tuple:
-        """📅 解析日期信息"""
+        """📅 解析日期信息 - 优化版本"""
         try:
-            year_match = re.search(r'\b(19|20)\d{2}\b', date_text)
-            year = int(year_match.group()) if year_match else None
-            
+            # 尝试解析不同的日期格式
             date_patterns = [
-                r'\b\d{4}-\d{2}-\d{2}\b',
-                r'\b\d{1,2}/\d{1,2}/\d{4}\b',
-                r'\b\d{1,2}-\d{1,2}-\d{4}\b'
+                r'(\d{4})/(\d{1,2})/(\d{1,2})',  # 2023/10/21
+                r'(\d{4})-(\d{1,2})-(\d{1,2})',  # 2023-10-21
+                r'(\d{1,2})/(\d{1,2})/(\d{4})',  # 10/21/2023
+                r'(\d{1,2})-(\d{1,2})-(\d{4})',  # 10-21-2023
             ]
             
-            date_str = ""
             for pattern in date_patterns:
-                date_match = re.search(pattern, date_text)
-                if date_match:
-                    date_str = date_match.group()
-                    break
+                match = re.search(pattern, date_text)
+                if match:
+                    groups = match.groups()
+                    if len(groups) == 3:
+                        if len(groups[0]) == 4:  # YYYY/MM/DD or YYYY-MM-DD
+                            year, month, day = int(groups[0]), int(groups[1]), int(groups[2])
+                        else:  # MM/DD/YYYY or MM-DD-YYYY
+                            month, day, year = int(groups[0]), int(groups[1]), int(groups[2])
+                        
+                        # 验证日期合理性
+                        if 1900 <= year <= 2030 and 1 <= month <= 12 and 1 <= day <= 31:
+                            date_str = f"{year}-{month:02d}-{day:02d}"
+                            return year, date_str
             
-            if not date_str and year:
-                logger.warning(f"⚠️ 解析日期信息失败: {date_text}")
-                date_str = f"{year}-01-01"
+            # 如果没有找到完整日期，尝试只提取年份
+            year_match = re.search(r'\b(19|20)\d{2}\b', date_text)
+            if year_match:
+                year = int(year_match.group())
+                if 1900 <= year <= 2030:
+                    return year, f"{year}-01-01"
             
-            return year, date_str
+            return 0, ""
             
         except Exception as e:
             logger.warning(f"⚠️ 解析日期信息失败: {str(e)}")
-            return -1, ""
+            return 0, ""
     
     def _parse_citations(self, citation_text: str) -> int:
-        """📊 解析引用次数"""
+        """📊 解析引用次数 - 优化版本"""
         try:
-            patterns = [
-                r'Cited by (\d+)',
-                r'引用 (\d+)',
-                r'(\d+) citations',
-                r'(\d+)'
-            ]
+            # 查找 "Cited by X" 模式
+            cited_by_match = re.search(r'Cited by (\d+)', citation_text, re.IGNORECASE)
+            if cited_by_match:
+                return int(cited_by_match.group(1))
             
-            for pattern in patterns:
-                match = re.search(pattern, citation_text, re.IGNORECASE)
-                if match:
-                    return int(match.group(1))
+            # 查找纯数字
+            number_match = re.search(r'\b(\d+)\b', citation_text)
+            if number_match:
+                return int(number_match.group(1))
             
             return 0
             
@@ -710,35 +740,71 @@ class GoogleScholarSearchTask:
             logger.warning(f"⚠️ 解析引用次数失败: {str(e)}")
             return 0
     
-    def _parse_publisher_info(self, publisher_text: str) -> tuple:
-        """📰 解析发表商和论文类型信息"""
+    def _infer_paper_type(self, publisher_text: str) -> str:
+        """📰 推断论文类型"""
         try:
-            publisher = publisher_text
-            paper_type = ""
-            
-            bracket_pattern = r'\([^)]*\)'
-            publisher_clean = re.sub(bracket_pattern, '', publisher_text).strip()
-            
-            if publisher_clean:
-                publisher = publisher_clean
-            
             text_lower = publisher_text.lower()
             
-            if any(keyword in text_lower for keyword in ['journal', 'nature', 'science', 'ieee', 'acm']):
-                paper_type = "Journal"
-            elif any(keyword in text_lower for keyword in ['conference', 'proceedings', 'workshop', 'symposium']):
-                paper_type = "Conference"
-            elif any(keyword in text_lower for keyword in ['arxiv', 'preprint', 'biorxiv']):
-                paper_type = "Preprint"
-            else:
-                paper_type = "Unknown"
+            # 期刊关键词
+            journal_keywords = ['journal', 'nature', 'science', 'ieee', 'acm transactions', 'plos']
+            if any(keyword in text_lower for keyword in journal_keywords):
+                return "Journal"
             
-            return publisher, paper_type
+            # 会议关键词
+            conference_keywords = ['conference', 'proceedings', 'workshop', 'symposium', 'acm', 'ieee']
+            if any(keyword in text_lower for keyword in conference_keywords):
+                return "Conference"
+            
+            # 预印本关键词
+            preprint_keywords = ['arxiv', 'preprint', 'biorxiv', 'medrxiv']
+            if any(keyword in text_lower for keyword in preprint_keywords):
+                return "Preprint"
+            
+            return "Unknown"
             
         except Exception as e:
-            logger.warning(f"⚠️ 解析发表商信息失败: {str(e)}")
-            return "", ""
+            logger.warning(f"⚠️ 推断论文类型失败: {str(e)}")
+            return "Unknown"
     
+    def test_paper_detail_extraction(self, paper_url: str) -> Optional[PaperBase]:
+        """🧪 测试论文详情提取功能"""
+        try:
+            logger.info(f"🧪 开始测试论文详情提取: {paper_url}")
+            
+            # 访问论文详情页面
+            self.driver.get(paper_url)
+            
+            # 等待页面加载
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
+            )
+            
+            # 等待一下确保页面完全加载
+            time.sleep(3)
+            
+            # 提取论文详情
+            paper_details = self._extract_paper_details(paper_url)
+            
+            if paper_details:
+                logger.info(f"✅ 测试成功！提取到论文信息:")
+                logger.info(f"📑 标题: {paper_details.title}")
+                logger.info(f"👥 作者: {paper_details.authors}")
+                logger.info(f"📅 年份: {paper_details.year}")
+                logger.info(f"📊 引用: {paper_details.citations}")
+                logger.info(f"📰 发表商: {paper_details.publisher}")
+                logger.info(f"📋 类型: {paper_details.paper_type}")
+                logger.info(f"🔗 PDF: {paper_details.pdf_url}")
+                if paper_details.description:
+                    logger.info(f"📝 描述: {paper_details.description[:100]}...")
+            else:
+                logger.error("❌ 测试失败！未能提取论文信息")
+            
+            return paper_details
+            
+        except Exception as e:
+            logger.error(f"❌ 测试过程中发生错误: {str(e)}")
+            return None
+
     def _cleanup(self):
         """🔒 清理资源"""
         try:
